@@ -2,6 +2,9 @@
 
 The Treboada project...
 
+![Project diagram](./doc/sensors_drawing.jpg "Project diagram")
+
+
 This sketch uses interrupts to read pulses from 2 sensors (equipped with reed switches).
 The board enters sleep mode when not reading a sensor or sending data.
 Sleep modes allow a significant drop in the power usage of a board while it does nothing waiting for an event to happen. 
