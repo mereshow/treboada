@@ -1,120 +1,141 @@
-/**
- * Blink
- *
- * Read any c
- * then off for one second, repeatedly.
- */
+/*
+  Treboada sensors
+
+  This sketch uses interrupts to read pulses from 2 sensors (equipped with reed switches).
+  The board enters sleep mode when not reading a sensor or sending data.
+  Sleep modes allow a significant drop in the power usage of a board while it does nothing waiting for an event to happen. 
+  Battery powered application can take advantage of these modes to enhance battery life significantly.
+  In this sketch, the internal RTC will wake up the processor every 10 minutes. Absolute  time is kept using an DS3231 RTC.
+  When the processor is woken up, it sends the data collected during 10 minutes to SigFox.
+  
+  Please note that, if the processor is sleeping, a new sketch can't be uploaded. To overcome this, manually reset the board (usually with a single or double tap to the RESET button)
+*/
+
 #include "Arduino.h"
+#include <ArduinoLowPower.h>
+#include "RTClib.h"
 #include <SigFox.h>
 #include <SimplyAtomic.h>
-#include <ArduinoLowPower.h>
-// Date and time functions using a DS3231 RTC connected via I2C and Wire lib
-#include <Wire.h>
-#include "RTClib.h"
 
-RTC_DS3231 rtc;
+RTC_DS3231 externalRTC;
 
-// Set LED_BUILTIN if it is not defined by Arduino framework
-// #define LED_BUILTIN 13
+const byte sensor1Pin = 0;
+const bool useSensor2 = true; //Indicates whether we are using a second sensor
+const byte sensor2Pin = 1;
+volatile byte sensor1PinIntCter = 0; //Counter for sensor 1 interruptions between send periods
+volatile byte sensor2PinIntCter = 0; //Counter for sensor 2 interruptions between send periods
+volatile bool sendData = false;      //Indicates if it is time  to send the data so SigFox
 
-// Pin the pluviometer is connected to
-const byte interruptPin = 2;
-volatile byte counter = 0;
-
-const int dataSendPeriod = 10 * 60; //Time the Arduino sleeps between sending data to Sigfox (in second)
-
-// Increments the variable that counts how many times the pluviometer empties
-void incrementCounter()
+/**
+ *  Increments the variable that counts how many pulses the sensor 1 sent
+ * */
+void incrementSensor1IntCounter()
 {
-    Serial.write("Interrupted by pin");
-    counter++;
+    sensor1PinIntCter++;
 }
 
-void sendData()
+/**
+ *  Increments the variable that counts how many pulses the sensor 2 sent
+ * */
+void incrementSensor2IntCounter()
 {
-    Serial.write("Interrupted by RTC");
-    // This function will be called once on device wakeup
-    // You can do some little operations here (like changing variables which will be used in the loop)
-    // Remember to avoid calling delay() and long running functions since this functions executes in interrupt context
+    sensor2PinIntCter++;
+}
 
-    // We can wake from an interruption or from a scheduled sleep, so we need to check if it's time to
-    // send the data every time we wake up
-    // TODO check if its time to send data when we wake up
-    byte value;
-    // Execute atomic code: Alternative to noInterrupts(); and interrupts(); saving interruptions state
-    ATOMIC()
+/**
+ *  Sets the flag to send data when the RTC_ALARM is triggered
+ * */
+void alarmWakeUp()
+{
+    sendData = true;
+}
+
+/**
+ *  Send data to Sigfox
+ * */
+void sendData2Sigfox()
+{
+    byte value1;
+    byte value2;
+
+    ATOMIC() // Execute atomic code: Alternative to noInterrupts(); and interrupts(); saving interruptions state
     {
-        value = counter;
-        counter = 0;
+        value1 = sensor1PinIntCter;
+        sensor1PinIntCter = 0;
+        if (useSensor2)
+        {
+            value2 = sensor2PinIntCter;
+            sensor2PinIntCter = 0;
+        }
     }
 
-    // TODO Write value to Sigfox
-    digitalWrite(LED_BUILTIN, value);
+    // Wait at least 30mS after first configuration (100mS before)
+    delay(100);
+    // Clears all pending interrupts
+    SigFox.status();
+    delay(1);
+
+    // Keep the SigFox module on as low as possible
+    SigFox.begin();
+    SigFox.beginPacket();
+    SigFox.write(value1);
+    if (useSensor2)
+        SigFox.write(value2);
+    SigFox.endPacket();
+    SigFox.end(); // shut down module, back to standby
 }
 
-void printTime(String header, DateTime time)
+/**
+ * Sleeps until it is time to send the data (each 10 minutes)
+*/
+void sleep()
 {
-    Serial.print(header);
-    Serial.print('= ');
-    Serial.print(time.year(), DEC);
-    Serial.print('-');
-    Serial.print(time.month(), DEC);
-    Serial.print('-');
-    Serial.print(time.day(), DEC);
-    Serial.print(" ");
-    Serial.print(time.hour(), DEC);
-    Serial.print(':');
-    Serial.print(time.minute(), DEC);
-    Serial.print(':');
-    Serial.print(time.second(), DEC);
-    Serial.println();
+    DateTime now = externalRTC.now();
+    DateTime nextWakeUp = now + TimeSpan(0, 0, 10 - 1 - (now.minute() % 10), 60 - (now.second() % 60));
+    uint32_t sleepTime = nextWakeUp.unixtime() - now.unixtime();
+    LowPower.deepSleep(sleepTime * 1000);
 }
 
 void setup()
 {
-    if (!SigFox.begin())
+    //pinMode(LED_BUILTIN, OUTPUT);
+
+    if (!SigFox.begin()) //something is really wrong, try rebooting
     {
-        // Something is really wrong, try rebooting
-        // Reboot is useful if we are powering the board using an unreliable power source
-        // (eg. solar panels or other energy harvesting methods)
         NVIC_SystemReset();
         while (1)
             ;
     }
 
-    //If RTC is not up, use internal?
-    if (!rtc.begin())
+    SigFox.end(); //Send module to standby until we need to send a message
+
+    if (!externalRTC.begin())
     {
-        Serial.println("Couldn't find RTC");
-        while (1)
-            ;
+        //TODO flash 3 times
     }
 
-    // Set the interruption in the pin that read the pluviometer
-    // The pluviometer used a reed switch, we have to use a pullup resistor
-    pinMode(interruptPin, INPUT_PULLUP);
-    // Attach a wakeup interrupt on interruptPin, calling incrementCounter when the device is woken up
-    LowPower.attachInterruptWakeup(digitalPinToInterrupt(interruptPin), incrementCounter, LOW);
+    //Call alarmWakeUp function when the RTC wakes up the system
+    LowPower.attachInterruptWakeup(RTC_ALARM_WAKEUP, alarmWakeUp, CHANGE);
 
-    // Initialize and set the RTC
-    // TODO set an alarm that sends the data via Sigfox: does it call a function??
-    // Uncomment this function if you wish to attach function dummy when RTC wakes up the chip
-    LowPower.attachInterruptWakeup(RTC_ALARM_WAKEUP, sendData, CHANGE);
-
-    // initialize LED digital pin as an output.
-    pinMode(LED_BUILTIN, OUTPUT);
+    pinMode(sensor1Pin, INPUT_PULLUP); // The sensor 1 uses a reed switch, we have to use a pullup resistor
+    LowPower.attachInterruptWakeup(digitalPinToInterrupt(sensor1Pin), incrementSensor1IntCounter, RISING);
+    if (useSensor2)
+    {
+        pinMode(sensor2Pin, INPUT_PULLUP); // The sensor 2 uses a reed switch, we have to use a pullup resistor
+        LowPower.attachInterruptWakeup(digitalPinToInterrupt(sensor2Pin), incrementSensor2IntCounter, RISING);
+    }
 }
 
 void loop()
 {
-    // Triggers a XX ms sleep (the device will be woken up only by the registered wakeup sources and by internal RTC)
-    // The power consumption of the chip will drop consistently
-    //TODO get the current time and sleep for 10 - current_time_minutes MOD 10 minutes BUT IN SECONDS
-    DateTime now = rtc.now();
-    DateTime nextWakeUp = DateTime(now.year,now.month,now.day,now.hour,now.minute, 0) + TimeSpan(0,0,10 - (now.minute % 10),0);
-    //TODO write nextWakeUp to console
-    printTime("Now", now);
-    printTime("nextWakeUp", nextWakeUp);
+    sleep(); // Puts the system to sleep: the power consumption of the chip will drop consistently
 
-    LowPower.sleep(nextWakeUp.unixtime-now.unixtime);
+    if (sendData)
+    {
+        sendData2Sigfox();
+        //BUG: SigFox.endpacket causes RTC alarm handler to be called again (setting sendData = true).
+        //We have to set "sendData = false" after sending
+        // TODO test if SigFox.status() solves this
+        sendData = false;
+    }
 }
