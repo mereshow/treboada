@@ -69,14 +69,13 @@ void sendData2Sigfox()
         }
     }
 
+    // Keep the SigFox module on as low as possible
+    SigFox.begin();
     // Wait at least 30mS after first configuration (100mS before)
     delay(100);
     // Clears all pending interrupts
     SigFox.status();
     delay(1);
-
-    // Keep the SigFox module on as low as possible
-    SigFox.begin();
     SigFox.beginPacket();
     SigFox.write(value1);
     if (useSensor2)
@@ -98,8 +97,6 @@ void sleep()
 
 void setup()
 {
-    //pinMode(LED_BUILTIN, OUTPUT);
-
     if (!SigFox.begin()) //something is really wrong, try rebooting
     {
         NVIC_SystemReset();
@@ -132,10 +129,11 @@ void loop()
 
     if (sendData)
     {
+        sendData = false;
         sendData2Sigfox();
         //BUG: SigFox.endpacket causes RTC alarm handler to be called again (setting sendData = true).
         //We have to set "sendData = false" after sending
-        // TODO test if SigFox.status() solves this
-        sendData = false;
+        // TODO test if using SigFox.status() solves this
+        
     }
 }
