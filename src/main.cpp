@@ -20,7 +20,7 @@
 RTC_DS3231 externalRTC;
 
 const byte sensor1Pin = 0;
-const bool useSensor2 = true; //Indicates whether we are using a second sensor
+const bool useSensor2 = false; //Indicates whether we are using a second sensor
 const byte sensor2Pin = 1;
 volatile byte sensor1PinIntCter = 0; //Counter for sensor 1 interruptions between send periods
 volatile byte sensor2PinIntCter = 0; //Counter for sensor 2 interruptions between send periods
@@ -74,8 +74,8 @@ void sendData2Sigfox()
     // Wait at least 30mS after first configuration (100mS before)
     delay(100);
     // Clears all pending interrupts
-    SigFox.status();
-    delay(1);
+    //SigFox.status();
+    //delay(1);
     SigFox.beginPacket();
     SigFox.write(value1);
     if (useSensor2)
@@ -126,14 +126,11 @@ void setup()
 void loop()
 {
     sleep(); // Puts the system to sleep: the power consumption of the chip will drop consistently
-
     if (sendData)
     {
-        sendData = false;
         sendData2Sigfox();
         //BUG: SigFox.endpacket causes RTC alarm handler to be called again (setting sendData = true).
-        //We have to set "sendData = false" after sending
-        // TODO test if using SigFox.status() solves this
-        
+        //We have to set "sendData = false" after sending. Using SigFox.status() does not solve this!
+        sendData = false;
     }
 }
